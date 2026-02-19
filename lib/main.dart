@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
-import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const MaxNetApp());
 
@@ -11,7 +10,10 @@ class MaxNetApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xFF0055A4)),
+      theme: ThemeData(
+        useMaterial3: true, 
+        colorSchemeSeed: const Color(0xFF0055A4),
+      ),
       home: const LoginPage(),
     );
   }
@@ -22,7 +24,6 @@ class ApiService {
   factory ApiService() => _instance;
   ApiService._internal();
 
-  // Використовуємо один клієнт для всіх запитів, щоб підтримувати сесію
   final _client = http.Client();
   String? _cookie;
 
@@ -31,18 +32,15 @@ class ApiService {
     final initUrl = Uri.parse('https://stat.maximuma.net/index2.php');
 
     try {
-      // 1. ПЕРШИЙ КРОК: Заходимо на сторінку входу (GET)
+      // 1. Отримання сесійної куки 
       final initRes = await _client.get(initUrl, headers: {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
       });
       
-      // Зберігаємо куку, яку видав сервер
       _cookie = initRes.headers['set-cookie']?.split(';').first;
 
-      // 2. ДРУГИЙ КРОК: Відправляємо дані (POST)
-      // Ми використовуємо Request вручну, щоб контролювати кожен заголовок
+      // 2. Авторизація (POST) 
       final request = http.Request('POST', url);
-      
       request.headers.addAll({
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
@@ -51,7 +49,6 @@ class ApiService {
         if (_cookie != null) 'Cookie': _cookie!,
       });
 
-      // Порядок полів як у вашій HTML формі: login -> password -> action
       request.bodyFields = {
         'login': login.trim(),
         'password': password.trim(),
@@ -61,56 +58,54 @@ class ApiService {
       final streamedResponse = await _client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
 
-      // 3. ТРЕТІЙ КРОК: Аналіз результату
-      // Перевіряємо наявність ID або ключового слова успіху
+      // 3. Аналіз відповіді 
       if (response.body.contains('ІНФОРМАЦІЯ АБОНЕНТА') || response.body.contains(login.trim())) {
         return _parseData(response.body);
       } else {
-        // Якщо сервер повернув форму входу (index2.php), значить дані не прийняті
-        String snippet = response.body.length > 100 ? response.body.substring(0, 100) : response.body;
-        throw Exception("Сервер відхилив запит. Фрагмент відповіді: $snippet");
+        throw Exception("Невірний логін або пароль");
       }
     } catch (e) {
       rethrow;
     }
   }
 
+  // Оновлений парсинг усіх даних 
   Map<String, String> _parseData(String html) {
     var doc = parse(html);
-    var balance = "0.00";
-    var id = "---";
+    Map<String, String> data = {
+      'balance': '0.00',
+      'id': '---',
+      'name': '---',
+      'tariff': '---',
+      'status': '---',
+      'expiry': '---',
+    };
 
-    // Шукаємо баланс (він часто в тегу <font color='red'>)
-    var redFont = doc.querySelector("font[color='red'] b") ?? doc.querySelector("b font[color='red']");
-    if (redFont != null) {
-      balance = redFont.text.trim();
-    } else {
-      // Альтернативний пошук у таблиці
-      var rows = doc.querySelectorAll('tr');
-      for (var row in rows) {
-        if (row.text.contains('Поточний баланс')) {
-          balance = row.querySelectorAll('td').last.text.trim();
-        }
+    var rows = doc.querySelectorAll('tr');
+    for (var row in rows) {
+      var text = row.text;
+      var cells = row.querySelectorAll('td');
+      if (cells.length < 2) continue;
+
+      var value = cells.last.text.trim();
+
+      // Шукаємо відповідність за ключовими словами в рядку таблиці
+      if (text.contains('№ договору')) data['id'] = value;
+      if (text.contains('ПІБ')) data['name'] = value;
+      if (text.contains('Тарифний план')) data['tariff'] = value;
+      if (text.contains('Статус')) data['status'] = value;
+      if (text.contains('Кінцева дата')) data['expiry'] = value;
+      
+      if (text.contains('Поточний баланс')) {
+        var redFont = row.querySelector("font[color='red']");
+        data['balance'] = redFont != null ? redFont.text.trim() : value;
       }
     }
-
-    // Шукаємо ID договору
-    for (var row in doc.querySelectorAll('tr')) {
-      if (row.text.contains('№ договору')) {
-        id = row.querySelectorAll('td').last.text.trim();
-      }
-    }
-    return {'balance': balance, 'id': id};
+    return data;
   }
 }
 
 // --- LoginPage ---
-
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
 
 class _LoginPageState extends State<LoginPage> {
   final _l = TextEditingController();
@@ -123,15 +118,11 @@ class _LoginPageState extends State<LoginPage> {
     
     try {
       final res = await ApiService().login(_l.text, _p.text);
-      if (mounted) {
-        setState(() => _busy = false);
-        if (res != null) {
-          Navigator.pushReplacement(context, MaterialPageRoute(builder: (c) => HomePage(data: res)));
-        }
+      if (mounted && res != null) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (c) => HomePage(data: res)));
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _busy = false);
         showDialog(
           context: context,
           builder: (c) => AlertDialog(
@@ -141,6 +132,8 @@ class _LoginPageState extends State<LoginPage> {
           ),
         );
       }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -173,20 +166,80 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+// --- HomePage з виведенням усіх даних ---
+
 class HomePage extends StatelessWidget {
   final Map<String, String> data;
   const HomePage({super.key, required this.data});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Кабінет")),
-      body: Center(child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text("ID: ${data['id']}", style: const TextStyle(fontSize: 18)),
-          Text("${data['balance']} грн", style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.blue)),
-        ],
-      )),
+      appBar: AppBar(
+        title: const Text("Мій Кабінет"),
+        backgroundColor: const Color(0xFF0055A4),
+        foregroundColor: Colors.white,
+        centerTitle: true,
+      ),
+      body: Container(
+        color: Colors.grey[100],
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _buildBalanceCard(),
+            const SizedBox(height: 16),
+            _buildInfoTile("Абонент", data['name']!, Icons.person),
+            _buildInfoTile("ID Договору", data['id']!, Icons.assignment),
+            _buildInfoTile("Тариф", data['tariff']!, Icons.speed),
+            _buildInfoTile("Статус", data['status']!, Icons.info_outline),
+            _buildInfoTile("Діє до", data['expiry']!, Icons.calendar_today),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBalanceCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(15),
+          gradient: const LinearGradient(
+            colors: [Color(0xFF0055A4), Color(0xFF0077E6)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Column(
+          children: [
+            const Text("Поточний баланс", style: TextStyle(color: Colors.white70, fontSize: 16)),
+            const SizedBox(height: 10),
+            Text("${data['balance']} грн", 
+              style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoTile(String label, String value, IconData icon) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      child: ListTile(
+        leading: Icon(icon, color: const Color(0xFF0055A4)),
+        title: Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey)),
+        subtitle: Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87)),
+      ),
     );
   }
 }
