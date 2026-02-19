@@ -1,0 +1,34 @@
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterRoot = localProperties.getProperty('flutter.sdk')
+if (flutterRoot == null) {
+    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+}
+
+apply plugin: 'com.android.application'
+apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
+
+android {
+    namespace "com.maximum.net.app"
+    compileSdkVersion 34
+
+    defaultConfig {
+        applicationId "com.maximum.net.app"
+        minSdkVersion 21
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+        }
+    }
+}
