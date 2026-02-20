@@ -32,13 +32,33 @@ class ApiService {
   final _client = http.Client();
   String? _cookie;
 
-  // Декодування Win-1251 (кирилиця)
-  String _decodeResponse(http.Response response) {
-    try {
-      return latin1.decode(response.bodyBytes);
-    } catch (_) {
-      return response.body;
+  // Універсальне декодування кирилиці для Windows-1251
+  String _decodeWin1251(List<int> bytes) {
+    var out = StringBuffer();
+    for (var byte in bytes) {
+      if (byte >= 192 && byte <= 255) {
+        out.writeCharCode(byte + 848); 
+      } else if (byte == 168) {
+        out.write('Ё');
+      } else if (byte == 184) {
+        out.write('ё');
+      } else if (byte == 170) {
+        out.write('Є');
+      } else if (byte == 186) {
+        out.write('є');
+      } else if (byte == 175) {
+        out.write('Ї');
+      } else if (byte == 191) {
+        out.write('ї');
+      } else if (byte == 178) {
+        out.write('І');
+      } else if (byte == 179) {
+        out.write('і');
+      } else {
+        out.writeCharCode(byte);
+      }
     }
+    return out.toString();
   }
 
   Future<Map<String, String>?> login(String login, String password) async {
@@ -46,13 +66,11 @@ class ApiService {
     final initUrl = Uri.parse('https://stat.maximuma.net/index2.php');
 
     try {
-      // КРОК 1: Отримання куки
       final initRes = await _client.get(initUrl, headers: {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
       });
       _cookie = initRes.headers['set-cookie']?.split(';').first;
 
-      // КРОК 2: Авторизація
       final request = http.Request('POST', url);
       request.headers.addAll({
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -68,9 +86,8 @@ class ApiService {
 
       final streamedResponse = await _client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
-      final decodedBody = _decodeResponse(response);
+      final decodedBody = _decodeWin1251(response.bodyBytes);
 
-      // Перевірка на успішний вхід
       if (decodedBody.contains('ІНФОРМАЦІЯ АБОНЕНТА') || decodedBody.contains('logout')) {
         return _parseData(decodedBody);
       } else {
@@ -92,45 +109,46 @@ class ApiService {
       'expiry': '---',
     };
 
-    // 1. Парсинг основної таблиці (використовуємо селектори під ваш HTML)
+    // Парсинг основної таблиці (Абонент, ID, Баланс)
     var rows = doc.querySelectorAll('table.sample tr');
     for (var row in rows) {
       var cells = row.querySelectorAll('td');
       if (cells.length < 2) continue;
       
       String label = cells[0].text.toLowerCase();
-      String value = cells[1].text.trim();
-
-      if (label.contains('договору')) data['id'] = value;
-      if (label.contains('піб')) data['name'] = value;
-      if (label.contains('баланс')) {
-        // Отримуємо значення з тегу <b> всередині комірки (там лежить число)
-        var balanceBold = cells[1].querySelector('b');
-        data['balance'] = balanceBold != null ? balanceBold.text.trim() : value.split(' ').first;
+      
+      // Читаємо значення з другої комірки
+      if (label.contains('договору')) {
+        data['id'] = cells[1].text.trim();
       }
-      if (label.contains('кредит до')) data['expiry'] = value;
+      if (label.contains('піб')) {
+        data['name'] = cells[1].text.trim();
+      }
+      if (label.contains('баланс')) {
+        // ШУКАЄМО ТЕКСТ У ТЕГУ <b> (він там завжди, незалежно від кольору font)
+        var boldText = cells[1].querySelector('b');
+        data['balance'] = boldText != null ? boldText.text.trim() : cells[1].text.trim().split(' ').first;
+      }
+      if (label.contains('кредит до')) {
+        data['expiry'] = cells[1].text.trim();
+      }
     }
 
-    // 2. Парсинг сервісів (Тариф та Статус)
-    var servicesTable = doc.querySelector('#services table');
-    if (servicesTable != null) {
-      var sRows = servicesTable.querySelectorAll('tr');
+    // Парсинг таблиці сервісів (Тариф, Статус)
+    var serviceTable = doc.querySelector('#services table');
+    if (serviceTable != null) {
+      var sRows = serviceTable.querySelectorAll('tr');
       if (sRows.length >= 3) {
-        var dataRow = sRows[2]; // Третій рядок містить поточний тариф
-        var cells = dataRow.querySelectorAll('td');
+        var cells = sRows[2].querySelectorAll('td');
         if (cells.length >= 4) {
           data['tariff'] = cells[0].text.trim();
           data['status'] = cells[3].text.trim();
-          if (data['expiry'] == '---') data['expiry'] = cells[2].text.trim();
         }
       }
     }
-
     return data;
   }
 }
-
-// --- LoginPage ---
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -153,10 +171,7 @@ class _LoginPageState extends State<LoginPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(e.toString().replaceAll("Exception:", "")),
-          backgroundColor: Colors.red,
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -166,61 +181,31 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(35),
-          child: Column(children: [
-            // ЛОГОТИП З САЙТУ
-            Image.network(
-              'https://stat.maximuma.net/img/logo.png',
-              height: 70,
-              errorBuilder: (c, e, s) => const Icon(Icons.wifi, size: 70, color: Colors.deepPurple),
-            ),
-            const SizedBox(height: 10),
-            const Text("ОСОБИСТИЙ КАБІНЕТ", 
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.orange, letterSpacing: 3)),
+      body: Container(
+        padding: const EdgeInsets.all(35),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.network('https://stat.maximuma.net/img/logo.png', height: 80, errorBuilder: (c,e,s) => const Icon(Icons.wifi, size: 80)),
             const SizedBox(height: 50),
-            _buildField(_l, "ID або Логін", Icons.person_outline),
+            TextField(controller: _l, decoration: const InputDecoration(labelText: "Логін (ID)", border: OutlineInputBorder())),
             const SizedBox(height: 15),
-            _buildField(_p, "Пароль", Icons.lock_outline, obscure: true),
-            const SizedBox(height: 35),
+            TextField(controller: _p, obscureText: true, decoration: const InputDecoration(labelText: "Пароль", border: OutlineInputBorder())),
+            const SizedBox(height: 30),
             if (_busy) const CircularProgressIndicator()
             else SizedBox(
-              width: double.infinity,
-              height: 55,
+              width: double.infinity, height: 55,
               child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.deepPurple,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                ),
-                onPressed: _submit,
-                child: const Text("УВІЙТИ", style: TextStyle(fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+                onPressed: _submit, child: const Text("УВІЙТИ")
               ),
             ),
-          ]),
+          ],
         ),
       ),
     );
   }
-
-  Widget _buildField(TextEditingController ctrl, String label, IconData icon, {bool obscure = false}) {
-    return TextField(
-      controller: ctrl,
-      obscureText: obscure,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: Colors.orange),
-        filled: true,
-        fillColor: Colors.deepPurple.withOpacity(0.05),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
-      ),
-    );
-  }
 }
-
-// --- HomePage ---
 
 class HomePage extends StatelessWidget {
   final Map<String, String> data;
@@ -228,75 +213,61 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool isBlocked = data['status']!.toLowerCase().contains('заблоковано');
+    // Визначаємо колір балансу: якщо є мінус — червоний, інакше зелений
+    bool isNegative = data['balance']!.contains('-');
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
       appBar: AppBar(
         title: Image.network('https://stat.maximuma.net/img/logo.png', height: 30),
         centerTitle: true,
-        backgroundColor: Colors.white,
-        elevation: 0,
       ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          _buildBalanceCard(isBlocked),
+          _buildBalanceCard(isNegative),
           const SizedBox(height: 25),
           _buildInfoTile("Абонент", data['name']!, Icons.person),
-          _buildInfoTile("Договір", data['id']!, Icons.tag),
+          _buildInfoTile("Договір ID", data['id']!, Icons.tag),
           _buildInfoTile("Тариф", data['tariff']!, Icons.bolt, color: Colors.orange),
           _buildInfoTile("Статус", data['status']!, Icons.info_outline, 
-              color: isBlocked ? Colors.red : Colors.green),
-          _buildInfoTile("Діє до", data['expiry']!, Icons.calendar_today),
+            textColor: data['status']!.contains('активований') ? Colors.green : Colors.red),
         ],
       ),
     );
   }
 
-  Widget _buildBalanceCard(bool blocked) {
+  Widget _buildBalanceCard(bool isNegative) {
     return Container(
       padding: const EdgeInsets.all(30),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Colors.deepPurple, Color(0xFF4527A0)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        gradient: const LinearGradient(colors: [Colors.deepPurple, Color(0xFF4527A0)]),
         borderRadius: BorderRadius.circular(25),
-        boxShadow: [BoxShadow(color: Colors.deepPurple.withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 8))],
       ),
       child: Column(
         children: [
-          const Text("До сплати", style: TextStyle(color: Colors.white70, fontSize: 14)),
-          const SizedBox(height: 8),
+          const Text("Мій баланс", style: TextStyle(color: Colors.white70)),
+          const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(data['balance']!, style: const TextStyle(color: Colors.white, fontSize: 45, fontWeight: FontWeight.bold)),
-              const SizedBox(width: 8),
-              const Text("грн", style: TextStyle(color: Colors.orange, fontSize: 20, fontWeight: FontWeight.bold)),
+              Text(data['balance']!, style: const TextStyle(color: Colors.white, fontSize: 40, fontWeight: FontWeight.bold)),
+              const Text(" грн", style: TextStyle(color: Colors.orange, fontSize: 22, fontWeight: FontWeight.bold)),
             ],
           ),
-          if (blocked)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text("Доступ обмежено", style: TextStyle(color: Colors.orange[200], fontSize: 12, fontWeight: FontWeight.w500)),
-            ),
         ],
       ),
     );
   }
 
-  Widget _buildInfoTile(String label, String value, IconData icon, {Color color = Colors.deepPurple}) {
+  Widget _buildInfoTile(String label, String value, IconData icon, {Color? color, Color? textColor}) {
     return Card(
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       child: ListTile(
-        leading: Icon(icon, color: color),
+        leading: Icon(icon, color: color ?? Colors.deepPurple),
         title: Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        subtitle: Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87)),
+        subtitle: Text(value, style: TextStyle(fontWeight: FontWeight.bold, color: textColor ?? Colors.black87)),
       ),
     );
   }
